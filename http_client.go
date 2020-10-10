@@ -25,7 +25,7 @@ const (
 
 const (
 	_HttpVersion = "Http/1.1"
-	_defTimeout  = time.Second * 10
+	DefTimeout   = time.Second * 10
 )
 
 // HttpClient
@@ -33,6 +33,9 @@ const (
 // TODO ⽀持Timeout / WriteTimeout / ReadTimeout 三种超时配置
 // ⽀持Header配置
 // TODO ⽀持https访问
+// TODO ⽀持 RFC 1867(https://tools.ietf.org/html/rfc1867)
+// TODO ⽀持连接池
+// TODO HTTP 1.1 需要支持Keepalive特性
 type HttpClient interface {
 	SetHeader(key, value string)
 	SetTimeout(timeout time.Duration)
@@ -43,13 +46,8 @@ type HttpClient interface {
 	Post(url string, body io.Reader) (string, error)
 }
 
-type Request struct {
-	_headers      map[string]string
-	_timeout      time.Duration
-	_writeTimeout time.Duration
-	_readTimeout  time.Duration
-	_options      Options
-	_config       SSLConfig
+type httpClient struct {
+	req Request
 }
 
 type Response struct {
@@ -68,112 +66,95 @@ type SSLConfig struct {
 	SSLCert string
 }
 
-func New(opt Options) Request {
-	return Request{
-		_headers:      _DefaultHeaders(),
-		_timeout:      _defTimeout,
-		_readTimeout:  _defTimeout,
-		_writeTimeout: _defTimeout,
-		_options:      opt,
+func NewClient(req Request) HttpClient {
+	return &httpClient{req}
+}
+
+func (client *httpClient) Get(url string) (string, error) {
+	client.req.Method = "GET"
+	client.req.Host = strings.Split(url, "/")[2]
+	client.req.Url = url
+	res, err := client.req.do()
+	if err != nil {
+		return "", err
 	}
+	return res.Body, nil
 }
 
-func NewWithSSL(opt Options, ssl SSLConfig) Request {
-	return Request{
-		_headers:      _DefaultHeaders(),
-		_timeout:      _defTimeout,
-		_readTimeout:  _defTimeout,
-		_writeTimeout: _defTimeout,
-		_options:      opt,
-		_config:       ssl,
-	}
-}
-
-func (req *Request) Get(url string) (string, error) {
-	return "", nil
-}
-
-func (req *Request) Head(url string) error {
+func (client *httpClient) Head(url string) error {
 	return nil
 }
 
-func (req *Request) Post(url string, body io.Reader) (string, error) {
-	return "", nil
-}
+func (client *httpClient) Post(url string, body io.Reader) (string, error) {
+	client.req.Method = "POST"
+	client.req.Host = strings.Split(url, "/")[2]
+	client.req.Url = url
 
-func (req *Request) SetHeader(key, value string) {
-	req._headers[key] = value
-}
+	//result := bytes.NewBuffer(nil)
+	//var buf [65542]byte // 由于 标识数据包长度 的只有两个字节 故数据包最大为 2^16+4(魔数)+2(长度标识)
+	//for {
+	//	n, err := conn.Read(buf[0:])
+	//	result.Write(buf[0:n])
+	//	if err != nil {
+	//		if err == io.EOF {
+	//			continue
+	//		} else {
+	//			fmt.Println("read err:", err)
+	//			break
+	//		}
+	//	} else {
+	//		scanner := bufio.NewScanner(result)
+	//		scanner.Split(packetSlitFunc)
+	//		for scanner.Scan() {
+	//			fmt.Println("recv:", string(scanner.Bytes()[6:]))
+	//		}
+	//	}
+	//	result.Reset()
+	//}
 
-func (req *Request) SetTimeout(timeout time.Duration) {
-	req._timeout = timeout
-}
-
-func (req *Request) SetWriteTimeout(timeout time.Duration) {
-	req._writeTimeout = timeout
-}
-
-func (req *Request) SetReadTimeout(timeout time.Duration) {
-	req._readTimeout = timeout
-}
-
-// 生成请求报文
-// TODO 计算Content-Length、设置默认Content-type、User-Agent、Accept-Charset、Accept-Language、Accept-Encoding(支持的压缩格式)
-// TODO Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*
-func (req *Request) _GenRequestData(method, url, body string) string {
-	reqBuilder := strings.Builder{}
-	reqBuilder.WriteString(method)
-	reqBuilder.WriteString(" ")
-	reqBuilder.WriteString(url)
-	reqBuilder.WriteString(" ")
-	reqBuilder.WriteString(_HttpVersion)
-	reqBuilder.WriteString("\r\n")
-	for key, val := range req._headers {
-		reqBuilder.WriteString(key)
-		reqBuilder.WriteString(":")
-		reqBuilder.WriteString(val)
-		reqBuilder.WriteString("\r\n")
+	buf := make([]byte, 1024)
+	for {
+		_, err := body.Read(buf)
+		if err == io.EOF {
+			break
+		}
 	}
-	reqBuilder.WriteString("\r\n")
-	reqBuilder.WriteString(body)
-	return reqBuilder.String()
-}
-
-// 解析响应报文
-// TODO 处理Accept-Encoding(压缩格式)
-func (req *Request) _ParseResponseData(originRes string) (res Response, err error) {
-	res = Response{}
-	resData := strings.Split(originRes, "\r\n")
-	dataPartCount := len(resData)
-	baseInfos := strings.Split(resData[0], " ")
-	res.Version = baseInfos[0]
-	res.Description = baseInfos[2]
-	status, err := strconv.Atoi(baseInfos[1])
+	client.req.Body = buf
+	client.SetHeader("Host", client.req.Host)
+	client.SetHeader("Content-Length", strconv.Itoa(len(client.req.Body)))
+	res, err := client.req.do()
 	if err != nil {
-		return
+		return "", err
 	}
-	res.Status = status
-	// 截取报文中的Header部分
-	heads := resData[1 : dataPartCount-2]
-	res.Headers = make(map[string]string, len(heads))
-	for _, head := range heads {
-		headInfo := strings.Split(head, ":")
-		res.Headers[headInfo[0]] = headInfo[1]
-	}
-	res.Body = resData[dataPartCount-1]
-	return
+	return res.Body, nil
+}
+
+func (client *httpClient) SetHeader(key, value string) {
+	client.req.Headers[key] = value
+}
+
+func (client *httpClient) SetTimeout(timeout time.Duration) {
+	client.req.Timeout = timeout
+}
+
+func (client *httpClient) SetWriteTimeout(timeout time.Duration) {
+	client.req.WriteTimeout = timeout
+}
+
+func (client *httpClient) SetReadTimeout(timeout time.Duration) {
+	client.req.ReadTimeout = timeout
 }
 
 // 生成默认的请求头
 func _DefaultHeaders() map[string]string {
 	return map[string]string{
 		// TODO 读取电脑信息
-		"User-Agent":      "",
+		"User-Agent":      "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1",
 		"Content-type":    string(PLAIN),
 		"Accept-Charset":  "UTF-8",
 		"Accept-Language": "zh",
-		"Accept-Encoding": "compress, gzip",
-		"Content-Length":  "",
+		"Accept-Encoding": "identity",
+		"Content-Length":  "0",
 		"Host":            "",
 		"Date":            time.Now().String(),
 	}

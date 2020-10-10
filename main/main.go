@@ -1,7 +1,6 @@
-package server
+package main
 
 import (
-	"fmt"
 	"html/template"
 	"io"
 	"log"
@@ -10,7 +9,6 @@ import (
 )
 
 const maxBytes = 2 * 1024 * 1024 // 2 MB
-const uploadPath = "./tmp"
 
 // 处理文件上传
 func uploadHandler() http.HandlerFunc {
@@ -29,8 +27,6 @@ func uploadHandler() http.HandlerFunc {
 		f, _ := os.Create("file.txt")
 		defer func() { _ = f.Close() }()
 		_, _ = io.Copy(f, file)
-
-		fmt.Println(req.FormValue("words"))
 	}
 }
 
@@ -50,8 +46,12 @@ func main() {
 	})
 	http.HandleFunc("/upload", uploadHandler())
 
-	fs := http.FileServer(http.Dir(uploadPath))
+	fs := http.FileServer(http.Dir("./tmp"))
 	http.Handle("/files", http.StripPrefix("/files", fs))
+
+	http.HandleFunc("/hello", func(w http.ResponseWriter, req *http.Request) {
+		w.Write([]byte("World!"))
+	})
 
 	log.Println("Server started on localhost:8080")
 
