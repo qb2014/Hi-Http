@@ -1,41 +1,59 @@
 package SimpleHttpClient
 
 import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
+	"net"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-type ContentType string
-
-// 常见的ContentType
+// ContentType
 const (
-	JSON       ContentType = "application/json"
-	HTML       ContentType = "text/html"
-	XML        ContentType = "application/xml"
-	XML2       ContentType = "text/xml"
-	PLAIN      ContentType = "text/plain"
-	URLENCODED ContentType = "application/x-www-form-urlencoded"
-	MULTIPART  ContentType = "multipart/form-data"
-	PROTOBUF   ContentType = "application/x-protobuf"
-	MSGPACK    ContentType = "application/x-msgpack"
-	MSGPACK2   ContentType = "application/msgpack"
+	Any        = "*/*"
+	JSON       = "application/json"
+	HTML       = "text/html"
+	XML        = "application/xml"
+	XML2       = "text/xml"
+	PLAIN      = "text/plain"
+	URLENCODED = "application/x-www-form-urlencoded"
+	MULTIPART  = "multipart/form-data"
+	PROTOBUF   = "application/x-protobuf"
+	MSGPACK    = "application/x-msgpack"
+	MSGPACK2   = "application/msgpack"
 )
 
+// Status code
 const (
-	_HttpVersion = "Http/1.1"
-	DefTimeout   = time.Second * 10
+	BAD_REQUEST int = 400
+)
+
+// default configs
+const DefTimeout = time.Second * 10
+
+// Errors
+var (
+	ErrConnectingTimeout = errors.New("connecting timeout")
+	ErrRequestFail       = errors.New("request fail")
+	ErrWithoutTLSConfig  = errors.New("the tls config was nil")
+	ErrRequestCanceled   = errors.New("the requesting was canceled in proactive")
+	ErrRequestTimeout    = errors.New("the request waiting response timeout")
 )
 
 // HttpClient
-// TODO ⾄少⽀持 GET / POST / HEAD 三个HTTP Method
-// TODO ⽀持Timeout / WriteTimeout / ReadTimeout 三种超时配置
+// ⾄少⽀持 GET / POST / HEAD 三个HTTP Method
+// ⽀持Timeout / WriteTimeout / ReadTimeout 三种超时配置
 // ⽀持Header配置
 // TODO ⽀持https访问
 // TODO ⽀持 RFC 1867(https://tools.ietf.org/html/rfc1867)
 // TODO ⽀持连接池
-// TODO HTTP 1.1 需要支持Keepalive特性
+// 支持HTTP 1.1 Keepalive特性
 type HttpClient interface {
 	SetHeader(key, value string)
 	SetTimeout(timeout time.Duration)
@@ -44,118 +62,330 @@ type HttpClient interface {
 	Get(url string) (string, error)
 	Head(url string) error
 	Post(url string, body io.Reader) (string, error)
+	// 释放连接
+	End()
 }
 
 type httpClient struct {
-	req Request
-}
-
-type Response struct {
-	Version     string
-	Status      int
-	Description string
-	Headers     map[string]string
-	Body        string
+	debug     bool
+	connected bool // 连接是否可用
+	ctx       context.Context
+	conn      net.Conn // 复用连接
+	connErr   error    // 连接错误
+	req       *Request // 当前请求
+	options   *Options // 请求配置选项
+	lock      *sync.Mutex
 }
 
 type Options struct {
 	Retry uint16
+	TLS   *tls.ConnectionState
 }
 
-type SSLConfig struct {
-	SSLCert string
-}
-
-func NewClient(req Request) HttpClient {
-	return &httpClient{req}
-}
-
-func (client *httpClient) Get(url string) (string, error) {
-	client.req.Method = "GET"
-	client.req.Host = strings.Split(url, "/")[2]
-	client.req.Url = url
-	res, err := client.req.do()
-	if err != nil {
-		return "", err
+func NewHttpClient(ctx context.Context, baseUrl string, opts Options) (c HttpClient, err error) {
+	isHttps := strings.HasPrefix(baseUrl, "https")
+	if isHttps && opts.TLS == nil {
+		return c, ErrWithoutTLSConfig
 	}
-	return res.Body, nil
+	// xxx.xxx...:123
+	host := strings.Split(baseUrl, "/")[2]
+	// 添加连接默认端口
+	if !strings.Contains(host, ":") {
+		host += If(isHttps, ":443", ":80").(string)
+	}
+	fmt.Println("connecting ->", host)
+	client := httpClient{
+		debug: ctx.Value("DEV") != nil,
+		ctx:   ctx,
+		req: &Request{
+			Host:         host,
+			Headers:      defaultHeaders(host),
+			Timeout:      DefTimeout,
+			ReadTimeout:  DefTimeout,
+			WriteTimeout: DefTimeout,
+		},
+		options: &opts,
+		lock:    &sync.Mutex{},
+	}
+	// TODO Https
+	go func(hc *httpClient) {
+		conn, err := net.DialTimeout("tcp", host, client.req.Timeout)
+		if err != nil {
+			hc.connErr = err
+			fmt.Println("connect err:", err)
+			return
+		}
+		hc.conn = conn
+		hc.connected = true
+		fmt.Println("connected <-", conn.RemoteAddr())
+	}(&client)
+	c = &client
+	return
 }
 
-func (client *httpClient) Head(url string) error {
-	return nil
+func (c *httpClient) SetHeader(key, value string) {
+	c.lock.Lock()
+	c.req.Headers[key] = value
+	c.lock.Unlock()
 }
 
-func (client *httpClient) Post(url string, body io.Reader) (string, error) {
-	client.req.Method = "POST"
-	client.req.Host = strings.Split(url, "/")[2]
-	client.req.Url = url
+func (c *httpClient) SetTimeout(timeout time.Duration) {
+	c.lock.Lock()
+	c.req.Timeout = timeout
+	c.lock.Unlock()
+}
 
-	//result := bytes.NewBuffer(nil)
-	//var buf [65542]byte // 由于 标识数据包长度 的只有两个字节 故数据包最大为 2^16+4(魔数)+2(长度标识)
-	//for {
-	//	n, err := conn.Read(buf[0:])
-	//	result.Write(buf[0:n])
-	//	if err != nil {
-	//		if err == io.EOF {
-	//			continue
-	//		} else {
-	//			fmt.Println("read err:", err)
-	//			break
-	//		}
-	//	} else {
-	//		scanner := bufio.NewScanner(result)
-	//		scanner.Split(packetSlitFunc)
-	//		for scanner.Scan() {
-	//			fmt.Println("recv:", string(scanner.Bytes()[6:]))
-	//		}
-	//	}
-	//	result.Reset()
-	//}
+func (c *httpClient) SetWriteTimeout(timeout time.Duration) {
+	c.lock.Lock()
+	c.req.WriteTimeout = timeout
+	c.lock.Unlock()
+}
 
-	buf := make([]byte, 1024)
+func (c *httpClient) SetReadTimeout(timeout time.Duration) {
+	c.lock.Lock()
+	c.req.ReadTimeout = timeout
+	c.lock.Unlock()
+}
+
+func (c *httpClient) Head(url string) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.req.Method = "HEAD"
+	c.req.Url = getUrl(url)
+	_, err := c.request()
+	return err
+}
+
+func (c *httpClient) Get(url string) (string, error) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.req.Method = "GET"
+	c.req.Url = getUrl(url)
+	return c.request()
+}
+
+func (c *httpClient) Post(url string, body io.Reader) (string, error) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.req.Method = "POST"
+	c.req.Url = getUrl(url)
+	c.req.Body = body
+	return c.request()
+}
+
+func (c *httpClient) End() {
+	if c.conn != nil && c.connected {
+		err := c.conn.Close()
+		c.connected = false
+		c.printLog("\nClose Conn Err:", err)
+	}
+}
+
+// 执行请求，并根据请求状态作相关重试工作
+func (c *httpClient) request() (string, error) {
+	var res Response
+	if err := c.checkConnection(); err != nil {
+		if c.needRetry() {
+			goto Retry
+		}
+		c.req.Retry = 0
+		return "", If(c.connected, ErrRequestFail, err).(error)
+	}
+	c.req.Done = false
+	res = c.do()
+	if c.needRetry() && ((res.Error != nil && res.Error != ErrRequestCanceled) || res.Status >= BAD_REQUEST) {
+		goto Retry
+	}
+	c.req.Done = true
+	c.req.Retry = 0
+	c.printLog(c.req.Method, "->", res.Status, res.Error)
+	return res.Body, res.Error
+Retry:
+	c.req.Retry++
+	c.printLog("\n△", c.req.Method, "Retrying, count ->", c.req.Retry)
+	return c.request()
+}
+
+// 发起请求
+func (c *httpClient) do() Response {
+	resChan := make(chan Response, 1)
+	defer close(resChan)
+	go c.requesting(resChan)
 	for {
-		_, err := body.Read(buf)
-		if err == io.EOF {
+		select {
+		case <-time.After(c.req.Timeout):
+			return Response{Status: BAD_REQUEST, Error: ErrRequestTimeout}
+		case <-c.ctx.Done():
+			return Response{Status: BAD_REQUEST, Error: ErrRequestCanceled}
+		case res := <-resChan:
+			c.printLog("\nResponse ▼\n", res, "\n\n----------------------------")
+			return res
+		}
+	}
+}
+
+// 实际请求逻辑
+func (c *httpClient) requesting(resChan chan Response) {
+	var (
+		res Response
+		err error
+	)
+	now := time.Now()
+	if err = c.conn.SetDeadline(now.Add(c.req.Timeout)); err != nil {
+		goto ResponseErr
+	}
+	if err = c.conn.SetReadDeadline(now.Add(c.req.ReadTimeout)); err != nil {
+		goto ResponseErr
+	}
+	if err = c.conn.SetWriteDeadline(now.Add(c.req.WriteTimeout)); err != nil {
+		goto ResponseErr
+	}
+	if err = c.sendRequestData(); err != nil {
+		goto ResponseErr
+	}
+	if res, err = c.waitResponse(); err != nil {
+		goto ResponseErr
+	}
+	resChan <- res
+	return
+ResponseErr:
+	if !c.req.Done {
+		resChan <- Response{Status: BAD_REQUEST, Error: err}
+	}
+}
+
+// 发送请求数据
+func (c *httpClient) sendRequestData() (err error) {
+	reqBytes, err := c.req.GetRequestData()
+	if err != nil {
+		return
+	}
+	if _, err = c.conn.Write(reqBytes); err != nil {
+		return
+	}
+	c.printLog("\n----------------------------\n", "Request ▼\n", string(reqBytes))
+	return
+}
+
+// 等待响应消息
+func (c *httpClient) waitResponse() (res Response, err error) {
+	var totalBuf []byte
+	for !c.req.Done {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+		buf := make([]byte, 1024)
+		// TODO 支持Accept-Encoding(压缩格式)
+		cnt, err := c.conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				return Response{Status: BAD_REQUEST, Error: err}, err
+			}
+			break
+		}
+		totalBuf = append(totalBuf, buf[:cnt]...)
+		if res = c.parseResponse(totalBuf); res.ContentLength == uint64(len(res.Body)) {
+			// TODO 模拟较长的请求时间,在Debug下有效
+			if c.debug {
+				time.Sleep(2 * time.Second)
+			}
 			break
 		}
 	}
-	client.req.Body = buf
-	client.SetHeader("Host", client.req.Host)
-	client.SetHeader("Content-Length", strconv.Itoa(len(client.req.Body)))
-	res, err := client.req.do()
-	if err != nil {
-		return "", err
+	return
+}
+
+// 解析响应报文
+func (c *httpClient) parseResponse(originRes []byte) (res Response) {
+	if len(originRes) == 0 {
+		return
 	}
-	return res.Body, nil
+	resData := strings.Split(string(originRes), "\r\n")
+	partCount := len(resData)
+	statusInfos := strings.Split(resData[0], " ")
+	res.Version = statusInfos[0]
+	status, err := strconv.Atoi(statusInfos[1])
+	if err != nil {
+		res.Status = BAD_REQUEST
+		res.Error = err
+		return
+	}
+	res.Status = status
+	res.Description = strings.Join(statusInfos[2:], " ")
+	// 截取报文中的Header部分
+	header := resData[1:If(resData[partCount-2] == "", partCount-2, partCount).(int)]
+	res.Headers = make(map[string]string, len(header))
+	for _, head := range header {
+		headInfo := strings.Split(head, ": ")
+		if len(headInfo) == 2 {
+			res.Headers[headInfo[0]] = headInfo[1]
+		}
+	}
+	cl, err := parseContentLength(res.Headers["Content-Length"])
+	if err != nil {
+		res.Status = BAD_REQUEST
+		res.Error = err
+		return
+	}
+	res.ContentLength = cl
+	if cl > 0 {
+		res.Body = resData[partCount-1]
+	}
+	return
 }
 
-func (client *httpClient) SetHeader(key, value string) {
-	client.req.Headers[key] = value
+// 检查与服务器的连接是否成功，若在指定时间内未成功则会返回连接超时错误
+func (c *httpClient) checkConnection() error {
+	deadline := time.Now().Add(c.req.Timeout)
+	for !c.connected {
+		if time.Now().After(deadline) || c.connErr != nil {
+			return ErrConnectingTimeout
+		}
+		runtime.Gosched()
+	}
+	return nil
 }
 
-func (client *httpClient) SetTimeout(timeout time.Duration) {
-	client.req.Timeout = timeout
+// 判断是否需要进行重试
+func (c *httpClient) needRetry() bool {
+	return c.options.Retry > 0 && c.req.Retry < c.options.Retry
 }
 
-func (client *httpClient) SetWriteTimeout(timeout time.Duration) {
-	client.req.WriteTimeout = timeout
-}
-
-func (client *httpClient) SetReadTimeout(timeout time.Duration) {
-	client.req.ReadTimeout = timeout
+// 日志打印
+func (c *httpClient) printLog(args ...interface{}) {
+	if c.debug {
+		fmt.Println(args...)
+	}
 }
 
 // 生成默认的请求头
-func _DefaultHeaders() map[string]string {
-	return map[string]string{
-		// TODO 读取电脑信息
-		"User-Agent":      "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1",
-		"Content-type":    string(PLAIN),
-		"Accept-Charset":  "UTF-8",
+func defaultHeaders(host string) Headers {
+	return Headers{
+		"Host":            host,
+		"User-Agent":      fmt.Sprintf("Simple_HTTP/1.0 (%s; CPU %s)", runtime.GOOS, runtime.GOARCH),
+		"Accept":          Any,
+		"Accept-Charset":  "utf-8",
 		"Accept-Language": "zh",
-		"Accept-Encoding": "identity",
-		"Content-Length":  "0",
-		"Host":            "",
-		"Date":            time.Now().String(),
+		"Accept-Encoding": "deflate",
+		"Cache-Control":   "no-cache",
+		"Connection":      "keep-alive",
 	}
+}
+
+// 解析并获取
+func getUrl(url string) string {
+	if strings.HasPrefix(url, "http") {
+		return "/" + strings.Join(strings.Split(url, "/")[3:], "/")
+	}
+	return url
+}
+
+// 解析ContentLength
+func parseContentLength(cl string) (l uint64, err error) {
+	if cl == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(cl, 10, 63)
 }
