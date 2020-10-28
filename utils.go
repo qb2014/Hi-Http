@@ -1,4 +1,4 @@
-package SimpleHttpClient
+package HiHttp
 
 func If(cond bool, then interface{}, els interface{}) interface{} {
 	if cond {

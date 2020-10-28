@@ -113,12 +113,12 @@ func main() {
 
 	go func() {
 		log.Println("Server started on localhost:888")
-		http.ListenAndServe(":888", nil)
+		_ = http.ListenAndServe(":888", nil)
 	}()
 
 	go func() {
 		log.Println("Server started on localhost:8443")
-		http.ListenAndServeTLS(":8443", "", "", nil)
+		_ = http.ListenAndServeTLS("192.168.80.239:8443", "./server/cert.pem", "./server/key.pem", nil)
 	}()
 	select {}
 }

@@ -1,4 +1,4 @@
-package SimpleHttpClient
+package HiHttp
 
 type Response struct {
 	Version       string

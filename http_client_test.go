@@ -1,4 +1,4 @@
-package SimpleHttpClient
+package HiHttp
 
 import (
 	"bytes"
@@ -7,15 +7,13 @@ import (
 	"time"
 )
 
+/// -------------------------------- 运行单元测试前，请先运行 /server/main.go --------------------------------
 /// -------------------------------- HTTP TESTING --------------------------------
 
 // 测试Get请求
 func TestHttpClient_Get(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 0,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 0})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -34,10 +32,7 @@ func TestHttpClient_Get(t *testing.T) {
 // 测试主动取消请求
 func TestHttpClient_Get_With_Cancel(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 1,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 1})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -56,10 +51,7 @@ func TestHttpClient_Get_With_Cancel(t *testing.T) {
 // 测试连接错误的服务器地址
 func TestHttpClient_Get_With_Wrong_Conn(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:8888", Options{
-		Retry: 2,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:8888", Options{Retry: 1})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -77,10 +69,7 @@ func TestHttpClient_Get_With_Wrong_Conn(t *testing.T) {
 // 测试连接错误的服务器地址
 func TestHttpClient_Get_With_Timeout(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 2,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 1})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -103,10 +92,7 @@ func TestHttpClient_Get_With_Timeout(t *testing.T) {
 // 测试同一个客户端进行多次请求
 func TestHttpClient_Get_With_Multi_Req(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 0,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 0})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -150,10 +136,7 @@ func TestHttpClient_Get_With_Multi_Req(t *testing.T) {
 // 测试Post请求
 func TestHttpClient_Post(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 0,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 0})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -179,10 +162,7 @@ func TestHttpClient_Post(t *testing.T) {
 // 测试Head请求
 func TestHttpClient_Head(t *testing.T) {
 	ctx := context.WithValue(context.Background(), "DEV", true)
-	client, err := NewHttpClient(ctx, "http://localhost:888", Options{
-		Retry: 0,
-		TLS:   nil,
-	})
+	client, err := HiHttp(ctx, "http://localhost:888", Options{Retry: 0})
 	if err != nil {
 		t.Log(err)
 		t.Fail()
@@ -199,7 +179,23 @@ func TestHttpClient_Head(t *testing.T) {
 /// -------------------------------- HTTPS TESTING --------------------------------
 
 // 测试Https GET请求
-func TestHttpClient_GET_With_TLS(t *testing.T) {}
+func TestHttpClient_GET_With_TLS(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "DEV", true)
+	client, err := HiHttp(ctx, "https://192.168.80.239:8443", Options{Retry: 0})
+	if err != nil {
+		t.Log(err)
+		t.Fail()
+		return
+	}
+	defer client.End()
+	result, err := client.Get("/hello")
+	if err != nil {
+		t.Log(err)
+		t.Fail()
+		return
+	}
+	t.Logf("success! result -> %s\n", result)
+}
 
 // 测试Https POST请求
 func TestHttpClient_Post_With_TLS(t *testing.T) {}

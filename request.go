@@ -1,4 +1,4 @@
-package SimpleHttpClient
+package HiHttp
 
 import (
 	"io"
@@ -7,22 +7,22 @@ import (
 	"time"
 )
 
+var (
+	_HttpVerBytes = []byte("HTTP/1.1")
+	_BrBytes      = []byte("\r\n")
+)
+
 type Headers map[string]string
 
 type Request struct {
-	Done              bool      // 标记请求是否已结束
-	Retry             uint16    // 失败重试次数
-	Host, Method, Url string    // 主机、请求方法、请求路径
-	Headers           Headers   // 请求头信息
-	Body              io.Reader // 请求体
+	Done        bool      // 标记请求是否已结束
+	Retry       uint16    // 失败重试次数
+	Method, Url string    // 请求方法、请求路径
+	Headers     Headers   // 请求头信息
+	Body        io.Reader // 请求体
 	// 连接超时、写入超时、读取超时
 	Timeout, WriteTimeout, ReadTimeout time.Duration
 }
-
-var (
-	_HttpVersionBytes = []byte("HTTP/1.1")
-	_BrBytes          = []byte("\r\n")
-)
 
 // 生成请求报文
 func (req *Request) GetRequestData() (reqBytes []byte, err error) {
@@ -31,7 +31,7 @@ func (req *Request) GetRequestData() (reqBytes []byte, err error) {
 	reqBytes = append(reqBytes, 0x20)
 	reqBytes = append(reqBytes, []byte(req.Url)...)
 	reqBytes = append(reqBytes, 0x20)
-	reqBytes = append(reqBytes, _HttpVersionBytes...)
+	reqBytes = append(reqBytes, _HttpVerBytes...)
 	reqBytes = append(reqBytes, _BrBytes...)
 	var bodyBytes []byte
 	if req.Body != nil {
